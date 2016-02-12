@@ -1,0 +1,190 @@
+<html>
+<body>
+
+            <div id="terminal">
+              <div class="terminal-top-bar">
+                videoconverter.js
+              </div>
+              <div class="terminal-header">
+                <input id="input" value="-i input.jpeg -vf vflip output.jpeg" />
+                <button id="run" class="plain-button">Run Command</button>
+                <button id="doit" class="plain-button">Do it</button>
+                <img id="image-loader" src="load.gif" />
+              </div>
+              <pre id="output">Loading JavaScript files (it may take a minute)</pre>
+            </div>
+            <div id="files">
+
+            </div>
+
+<script>
+var worker;
+var outputElement;
+var filesElement;
+var running = false;
+var isWorkerLoaded = false;
+var workerFinishedCallback;
+
+function isReady() {
+  return !running && isWorkerLoaded;
+}
+
+function startRunning() {
+  document.querySelector("#image-loader").style.visibility = "visible";
+  outputElement.className = "";
+  filesElement.innerHTML = "";
+  running = true;
+}
+function stopRunning() {
+  document.querySelector("#image-loader").style.visibility = "hidden";
+  running = false;
+}
+
+function parseArguments(text) {
+  text = text.replace(/\s+/g, ' ');
+  var args = [];
+  // Allow double quotes to not split args.
+  text.split('"').forEach(function(t, i) {
+    t = t.trim();
+    if ((i % 2) === 1) {
+      args.push(t);
+    } else {
+      args = args.concat(t.split(" "));
+    }
+  });
+  return args;
+}
+
+function runCommand(text, fileList, callback) {  
+  if (isReady()) {
+    workerFinishedCallback = callback;
+    startRunning();
+    var args = parseArguments(text);
+    console.log(args);
+    worker.postMessage({
+      type: "command",
+      arguments: args,
+      files : fileList
+    });
+  }
+}
+
+function getDownloadLink(fileData, fileName) {
+  if (fileName.match(/\.jpeg|\.gif|\.jpg|\.png/)) {
+    var blob = new Blob([fileData]);
+    var src = window.URL.createObjectURL(blob);
+    var img = document.createElement('img');
+
+    img.src = src;
+    return img;
+  }
+  else {
+    var a = document.createElement('a');
+    a.download = fileName;
+    var blob = new Blob([fileData]);
+    var src = window.URL.createObjectURL(blob);
+    a.href = src;
+    a.textContent = 'Click here to download ' + fileName + "!";
+    return a;
+  }
+}
+
+
+function initWorker() {
+  worker = new Worker("worker-asm.js");
+  worker.onmessage = function (event) {
+    var message = event.data;
+    if (message.type == "ready") {
+      isWorkerLoaded = true;
+      worker.postMessage({
+        type: "command",
+        arguments: ["-help"]
+      });
+    } else if (message.type == "stdout") {
+      outputElement.textContent += message.data + "\n";
+    } else if (message.type == "start") {
+      outputElement.textContent = "Worker has received command\n";
+    } else if (message.type == "done") {
+      stopRunning();
+      var buffers = message.data;
+      if (buffers.length) {
+        outputElement.className = "closed";
+      }
+      console.log(buffers);
+      buffers.forEach(function(file) {
+        filesElement.appendChild(getDownloadLink(file.data, file.name));
+      });
+      if (workerFinishedCallback) {
+        var c = workerFinishedCallback;
+        workerFinishedCallback = undefined;
+        c(buffers);
+      }
+    }
+  };
+}
+
+var WIDTH = 160;
+var HEIGHT = 120;
+
+var sampleVideoData = new Uint8Array(WIDTH*HEIGHT*3*20);
+
+var zoom = 1.0;
+
+function render() {
+ for (var f=0;f<20;f++) {
+  zoom -= 0.005;
+  for (y=0;y<HEIGHT;y++) {
+   for (x=0;x<WIDTH;x++) {
+    var Xr=0;
+    var Xi=0;
+    var Cr=(zoom*4.0*x/HEIGHT)-2.0*zoom;
+    var Ci=(zoom*4.0*y/HEIGHT)-2.0*zoom;
+    var i=0;
+    while ((i<5) && ((Xr*Xr+Xi*Xi)<4)) {
+      var t=Xr*Xr - Xi*Xi + Cr;
+      Xi=2*Xr*Xi+Ci;
+      Xr=t;
+      i++;
+    }
+      sampleVideoData[(f*WIDTH*HEIGHT*3)+(x+(y*WIDTH))*3] = (i&1) ? 255 : 0;
+   }
+  }
+ }
+}
+
+document.addEventListener("DOMContentLoaded", function() {
+
+  initWorker();
+  outputElement = document.querySelector("#output");
+  filesElement = document.querySelector("#files");
+
+  var inputElement = document.querySelector("#input");
+  document.querySelector("#run").addEventListener("click", function() {
+    runCommand(inputElement.value, [{
+          "name": "input.jpeg",
+          "data": sampleImageData
+        }]);
+  });
+  document.querySelector("#doit").addEventListener("click", function() {
+    render();
+    var ext = "mp4";
+    var encoding = "-strict -2 -c:v libx264";
+    runCommand("-f rawvideo -vcodec rawvideo -s "+WIDTH+"x"+HEIGHT+" -pix_fmt rgb24 -framerate 10 -i input.raw -an -vf showinfo "+encoding+" output."+ext, [        
+      { "name": "input.raw", "data": sampleVideoData }], function(files) {
+      var file1 = new Uint8Array(files[0].data);
+      render();
+      runCommand("-f rawvideo -vcodec rawvideo -s "+WIDTH+"x"+HEIGHT+" -pix_fmt rgb24 -framerate 10 -i input.raw -an -vf showinfo "+encoding+" output."+ext, [        
+        { "name": "input.raw", "data": sampleVideoData }], function(files) {
+        var file2 = new Uint8Array(files[0].data);
+        runCommand('-i a.'+ext+' -i b.'+ext+' -v debug -strict -2 -filter_complex "[0:v] [1:v] concat=n=2:v=1:a=0 [v]" -map "[v]" -an '+encoding+' output.'+ext, [     
+        { "name": "a."+ext, "data":file1 }, { "name": "b."+ext, "data":file2 }], function(files) {
+          console.log("Done");
+        });
+      });
+    });
+  });
+});
+
+</script>
+</body>
+</html>
